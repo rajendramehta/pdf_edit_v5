@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document Text Replacer</title>
     <style>
-        /* (same styles as before, unchanged) */
+        /* (your existing styles unchanged) */
     </style>
 </head>
 <body>
@@ -60,7 +60,8 @@
                 </div>
             </div>
             
-            <button type="button" class="btn btn-primary" id="processBtn" disabled>
+            <!-- 🔧 removed disabled -->
+            <button type="button" class="btn btn-primary" id="processBtn">
                 <span>Process Documents</span>
             </button>
             
@@ -77,34 +78,77 @@
     </div>
     
     <script>
-        // (other JS code unchanged up to processBtn listener)
+        // DOM references
+        const fileInput = document.getElementById('pdf-file-input');
+        const fileUploadArea = document.getElementById('fileUploadArea');
+        const fileInfo = document.getElementById('fileInfo');
+        const processBtn = document.getElementById('processBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const spinner = document.getElementById('loadingSpinner');
+        const statusMessage = document.getElementById('statusMessage');
+        const oldTextInput = document.getElementById('old_text');
+        const newTextInput = document.getElementById('new_text');
+        
+        let currentFiles = [];
 
+        // File input handler
+        fileInput.addEventListener('change', function(e) {
+            if (e.target.files.length > 0) {
+                handleFileSelect(Array.from(e.target.files));
+            }
+        });
+
+        // File drag/drop
+        fileUploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            fileUploadArea.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+                handleFileSelect(files);
+            }
+        });
+
+        function handleFileSelect(files) {
+            currentFiles = files;
+            console.log("Files selected:", currentFiles.map(f => f.name));
+            fileInfo.style.display = 'block';
+            fileInfo.innerHTML = files.map(f => `<div>${f.name}</div>`).join('');
+            checkFormValidity();
+        }
+
+        // 🔧 Validation check
+        function checkFormValidity() {
+            const hasFiles = currentFiles.length > 0;
+            const hasOldText = oldTextInput.value.trim() !== '';
+            console.log("Validation:", { hasFiles, hasOldText });
+            processBtn.disabled = !(hasFiles && hasOldText);
+        }
+
+        // Attach validation listeners
+        oldTextInput.addEventListener('input', checkFormValidity);
+        newTextInput.addEventListener('input', checkFormValidity);
+
+        // Process button click
         processBtn.addEventListener('click', async function() {
-            if (currentFiles.length === 0 || !oldTextInput.value.trim()) {
-                showStatus('Please select files and enter text to find', 'error');
+            if (processBtn.disabled) {
+                console.log("❌ Button is still disabled - check logs above");
                 return;
             }
-            
+            console.log("✅ Processing started");
+
             const formData = new FormData();
-            currentFiles.forEach(function(file) {
-                formData.append('pdf_file', file);
-            });
+            currentFiles.forEach(f => formData.append('pdf_file', f));
             formData.append('old_text', oldTextInput.value.trim());
             formData.append('new_text', newTextInput.value.trim());
-            
+
             setProcessingState(true);
             
             try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
+                const response = await fetch('/upload', { method: 'POST', body: formData });
 
                 if (!response.ok) {
-                    // ✅ check content type before parsing
                     let errorMsg = 'Processing failed';
                     const contentType = response.headers.get("content-type") || "";
-
                     if (contentType.includes("application/json")) {
                         const error = await response.json();
                         errorMsg = error.error || errorMsg;
@@ -112,35 +156,45 @@
                         const text = await response.text();
                         errorMsg = text || errorMsg;
                     }
-
                     throw new Error(errorMsg);
                 }
 
-                // ✅ Always treat successful response as blob (file)
                 const blob = await response.blob();
                 const url = window.URL.createObjectURL(blob);
-                
-                let filename;
-                if (currentFiles.length === 1) {
-                    filename = 'modified_' + currentFiles[0].name;
-                } else {
-                    filename = 'modified_files.zip';
-                }
-                
+                let filename = currentFiles.length === 1 ? 'modified_' + currentFiles[0].name : 'modified_files.zip';
                 downloadBtn.setAttribute('data-url', url);
                 downloadBtn.setAttribute('data-filename', filename);
-                
                 showStatus('Documents processed successfully!', 'success');
                 downloadBtn.style.display = 'flex';
-                
-            } catch (error) {
-                showStatus('Error: ' + error.message, 'error');
+
+            } catch (err) {
+                showStatus('Error: ' + err.message, 'error');
+                console.error(err);
             } finally {
                 setProcessingState(false);
             }
         });
 
-        // (rest of JS unchanged)
+        function setProcessingState(processing) {
+            processBtn.disabled = processing;
+            if (processing) {
+                spinner.classList.add('show');
+                downloadBtn.style.display = 'none';
+                hideStatus();
+            } else {
+                spinner.classList.remove('show');
+            }
+        }
+
+        function showStatus(message, type) {
+            statusMessage.textContent = message;
+            statusMessage.className = 'status-message status-' + type;
+            statusMessage.style.display = 'block';
+        }
+
+        function hideStatus() {
+            statusMessage.style.display = 'none';
+        }
     </script>
 </body>
 </html>
