@@ -1,200 +1,132 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Text Replacer</title>
-    <style>
-        /* (your existing styles unchanged) */
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document Text Replacer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f7f9fc;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .navbar {
+      background: #667eea;
+      color: white;
+      padding: 15px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      text-align: center;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      max-width: 600px;
+      margin: auto;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 10px;
+    }
+
+    p.subtitle {
+      text-align: center;
+      color: #666;
+      margin-bottom: 30px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 8px;
+      color: #444;
+    }
+
+    input[type="text"], input[type="file"] {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 1rem;
+      transition: border-color 0.3s;
+    }
+
+    input[type="text"]:focus, input[type="file"]:focus {
+      border-color: #667eea;
+      outline: none;
+    }
+
+    .file-types {
+      font-size: 0.85rem;
+      color: #777;
+      margin-top: 5px;
+    }
+
+    .btn {
+      display: inline-block;
+      width: 100%;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: bold;
+      color: white;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+    }
+  </style>
 </head>
 <body>
-    <!-- Top navigation bar -->
-    <div class="navbar">
-        <a href="/" class="navbar-brand">Document Text Replacer - Local Development</a>
-    </div>
+  <!-- Top bar -->
+  <div class="navbar">
+    Document Text Replacer
+  </div>
 
-    <!-- Main application container -->
-    <div class="container">
-        <h1>Document Text Replacer</h1>
-        <p class="subtitle">Replace text in PDF, CSV, XML, XPT files and ZIP folders with ease</p>
-        
-        <!-- Left panel -->
-        <div class="left-panel">
-            <div class="form-group">
-                <label for="old_text">Text to Find</label>
-                <input type="text" id="old_text" placeholder="Enter the text you want to replace..." required>
-            </div>
-            <div class="form-group">
-                <label for="new_text">Replace With</label>
-                <input type="text" id="new_text" placeholder="Enter the replacement text...">
-            </div>
-            <div class="form-group">
-                <label>Upload Documents</label>
-                <div class="file-upload-area" id="fileUploadArea">
-                    <span class="upload-icon">&#8593;</span>
-                    <div class="upload-text">Drop your files here or click to browse</div>
-                    <div class="upload-subtext">Supports PDF, CSV, XML, XPT files and ZIP folders</div>
-                    <input type="file" id="pdf-file-input" accept=".pdf,.csv,.xml,.xpt,.zip" multiple>
-                    <div class="file-info" id="fileInfo"></div>
-                </div>
-                <div class="file-types">Supported formats: PDF, CSV, XML, XPT, ZIP (Max 50MB total)</div>
-                <div class="multiple-files-info">You can select multiple files or upload a ZIP folder containing supported files</div>
-            </div>
-        </div>
-        
-        <!-- Right panel -->
-        <div class="right-panel">
-            <div class="process-steps">
-                <div class="step">
-                    <div class="step-number">1</div>
-                    <div class="step-text">Enter the text you want to find and replace</div>
-                </div>
-                <div class="step">
-                    <div class="step-number">2</div>
-                    <div class="step-text">Upload multiple documents or a ZIP folder</div>
-                </div>
-                <div class="step">
-                    <div class="step-number">3</div>
-                    <div class="step-text">Click process to generate your modified files</div>
-                </div>
-            </div>
-            
-            <!-- 🔧 removed disabled -->
-            <button type="button" class="btn btn-primary" id="processBtn">
-                <span>Process Documents</span>
-            </button>
-            
-            <div class="spinner" id="loadingSpinner">
-                <span>Processing your documents...</span>
-            </div>
-            
-            <div class="status-message" id="statusMessage"></div>
-            
-            <button type="button" class="btn btn-success" id="downloadBtn" style="display: none;">
-                <span>Download Modified Files</span>
-            </button>
-        </div>
-    </div>
-    
-    <script>
-        // DOM references
-        const fileInput = document.getElementById('pdf-file-input');
-        const fileUploadArea = document.getElementById('fileUploadArea');
-        const fileInfo = document.getElementById('fileInfo');
-        const processBtn = document.getElementById('processBtn');
-        const downloadBtn = document.getElementById('downloadBtn');
-        const spinner = document.getElementById('loadingSpinner');
-        const statusMessage = document.getElementById('statusMessage');
-        const oldTextInput = document.getElementById('old_text');
-        const newTextInput = document.getElementById('new_text');
-        
-        let currentFiles = [];
+  <!-- Main container -->
+  <div class="container">
+    <h1>Replace Text in Documents</h1>
+    <p class="subtitle">Upload your files, enter text, and download modified versions instantly</p>
 
-        // File input handler
-        fileInput.addEventListener('change', function(e) {
-            if (e.target.files.length > 0) {
-                handleFileSelect(Array.from(e.target.files));
-            }
-        });
+    <!-- ✅ Real form for Option A -->
+    <form action="/upload" method="post" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="old_text">Text to Find</label>
+        <input type="text" id="old_text" name="old_text" placeholder="Enter text to replace..." required>
+      </div>
 
-        // File drag/drop
-        fileUploadArea.addEventListener('drop', function(e) {
-            e.preventDefault();
-            fileUploadArea.classList.remove('dragover');
-            const files = Array.from(e.dataTransfer.files);
-            if (files.length > 0) {
-                handleFileSelect(files);
-            }
-        });
+      <div class="form-group">
+        <label for="new_text">Replace With</label>
+        <input type="text" id="new_text" name="new_text" placeholder="Enter replacement text...">
+      </div>
 
-        function handleFileSelect(files) {
-            currentFiles = files;
-            console.log("Files selected:", currentFiles.map(f => f.name));
-            fileInfo.style.display = 'block';
-            fileInfo.innerHTML = files.map(f => `<div>${f.name}</div>`).join('');
-            checkFormValidity();
-        }
+      <div class="form-group">
+        <label for="pdf-file-input">Upload Documents</label>
+        <input type="file" name="pdf_file" id="pdf-file-input" accept=".pdf,.csv,.xml,.xpt,.zip" multiple required>
+        <div class="file-types">Supported: PDF, CSV, XML, XPT, ZIP (Max 50MB)</div>
+      </div>
 
-        // 🔧 Validation check
-        function checkFormValidity() {
-            const hasFiles = currentFiles.length > 0;
-            const hasOldText = oldTextInput.value.trim() !== '';
-            console.log("Validation:", { hasFiles, hasOldText });
-            processBtn.disabled = !(hasFiles && hasOldText);
-        }
-
-        // Attach validation listeners
-        oldTextInput.addEventListener('input', checkFormValidity);
-        newTextInput.addEventListener('input', checkFormValidity);
-
-        // Process button click
-        processBtn.addEventListener('click', async function() {
-            if (processBtn.disabled) {
-                console.log("❌ Button is still disabled - check logs above");
-                return;
-            }
-            console.log("✅ Processing started");
-
-            const formData = new FormData();
-            currentFiles.forEach(f => formData.append('pdf_file', f));
-            formData.append('old_text', oldTextInput.value.trim());
-            formData.append('new_text', newTextInput.value.trim());
-
-            setProcessingState(true);
-            
-            try {
-                const response = await fetch('/upload', { method: 'POST', body: formData });
-
-                if (!response.ok) {
-                    let errorMsg = 'Processing failed';
-                    const contentType = response.headers.get("content-type") || "";
-                    if (contentType.includes("application/json")) {
-                        const error = await response.json();
-                        errorMsg = error.error || errorMsg;
-                    } else {
-                        const text = await response.text();
-                        errorMsg = text || errorMsg;
-                    }
-                    throw new Error(errorMsg);
-                }
-
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                let filename = currentFiles.length === 1 ? 'modified_' + currentFiles[0].name : 'modified_files.zip';
-                downloadBtn.setAttribute('data-url', url);
-                downloadBtn.setAttribute('data-filename', filename);
-                showStatus('Documents processed successfully!', 'success');
-                downloadBtn.style.display = 'flex';
-
-            } catch (err) {
-                showStatus('Error: ' + err.message, 'error');
-                console.error(err);
-            } finally {
-                setProcessingState(false);
-            }
-        });
-
-        function setProcessingState(processing) {
-            processBtn.disabled = processing;
-            if (processing) {
-                spinner.classList.add('show');
-                downloadBtn.style.display = 'none';
-                hideStatus();
-            } else {
-                spinner.classList.remove('show');
-            }
-        }
-
-        function showStatus(message, type) {
-            statusMessage.textContent = message;
-            statusMessage.className = 'status-message status-' + type;
-            statusMessage.style.display = 'block';
-        }
-
-        function hideStatus() {
-            statusMessage.style.display = 'none';
-        }
-    </script>
+      <!-- ✅ Direct submit triggers file download -->
+      <button type="submit" class="btn">Process & Download</button>
+    </form>
+  </div>
 </body>
 </html>
