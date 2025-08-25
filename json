@@ -1,0 +1,318 @@
+# Fixed Flask web application for text replacement
+# Changes: Two-step process - process first, then download
+
+from flask import Flask, request, render_template, send_file, jsonify
+import os
+import fitz  # PyMuPDF
+import pandas as pd
+import xml.etree.ElementTree as ET
+import pyreadstat
+import uuid
+import shutil
+import zipfile
+from werkzeug.utils import secure_filename
+import threading
+
+app = Flask(__name__, template_folder="templates")
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+
+# Create uploads directory
+UPLOAD_FOLDER = 'uploads'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# Store processed files temporarily
+processed_files_cache = {}
+
+# ---------------- File Processing Functions (same as before) ----------------
+
+def replace_text_in_pdf(input_pdf_path, old_text, new_text):
+    """Replace text in PDF using redaction and re-insertion to preserve formatting"""
+    pdf_document = fitz.open(input_pdf_path)
+    font_name = "Times-Roman"
+    
+    for page in pdf_document:
+        text_instances = page.search_for(old_text)
+        if text_instances:
+            # Get original formatting before modification
+            original_text_info = page.get_text("dict")['blocks']
+            
+            # Remove old text using redaction
+            for rect in text_instances:
+                page.add_redact_annot(rect)
+            page.apply_redactions()
+            
+            # Insert new text with preserved font size
+            for rect in text_instances:
+                original_fontsize = 12  # default
+                # Try to extract original font size
+                for block in original_text_info:
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            if old_text in span["text"]:
+                                original_fontsize = span["size"]
+                                break
+                        else:
+                            continue
+                        break
+                    else:
+                        continue
+                    break
+                
+                font_params = {
+                    'fontsize': original_fontsize,
+                    'fontname': font_name
+                }
+                insert_point = fitz.Point(rect.x0, rect.y1 - 2.5)
+                page.insert_text(insert_point, new_text, **font_params)
+    
+    output_path = input_pdf_path.replace('.pdf', '_modified.pdf')
+    pdf_document.save(output_path)
+    pdf_document.close()
+    return output_path
+
+
+def replace_text_in_csv(input_csv_path, old_text, new_text):
+    """Replace text in all CSV cells using pandas"""
+    df = pd.read_csv(input_csv_path, dtype=str)
+    df = df.applymap(lambda x: x.replace(old_text, new_text) if isinstance(x, str) else x)
+    output_path = input_csv_path.replace('.csv', '_modified.csv')
+    df.to_csv(output_path, index=False)
+    return output_path
+
+
+def replace_text_in_xml(input_xml_path, old_text, new_text):
+    """Replace text in XML elements, attributes, and text content"""
+    tree = ET.parse(input_xml_path)
+    root = tree.getroot()
+    
+    def replace_in_element(elem):
+        # Replace in text content, tail text, and attributes
+        if elem.text and old_text in elem.text:
+            elem.text = elem.text.replace(old_text, new_text)
+        if elem.tail and old_text in elem.tail:
+            elem.tail = elem.tail.replace(old_text, new_text)
+        for k, v in elem.attrib.items():
+            if old_text in v:
+                elem.attrib[k] = v.replace(old_text, new_text)
+        # Recursively process children
+        for child in elem:
+            replace_in_element(child)
+    
+    replace_in_element(root)
+    output_path = input_xml_path.replace('.xml', '_modified.xml')
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    return output_path
+
+
+def replace_text_in_xpt(input_xpt_path, old_text, new_text):
+    """Replace text in XPT (SAS transport) files while preserving metadata"""
+    df, meta = pyreadstat.read_xport(input_xpt_path)
+    df = df.applymap(lambda x: x.replace(old_text, new_text) if isinstance(x, str) else x)
+    output_path = input_xpt_path.replace('.xpt', '_modified.xpt')
+    pyreadstat.write_xport(df, output_path, file_format_version=8, table_name=meta.table_name)
+    return output_path
+
+
+def process_single_file(file_path, old_text, new_text):
+    """Route file to appropriate processor based on extension"""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.pdf':
+        return replace_text_in_pdf(file_path, old_text, new_text)
+    elif ext == '.csv':
+        return replace_text_in_csv(file_path, old_text, new_text)
+    elif ext == '.xml':
+        return replace_text_in_xml(file_path, old_text, new_text)
+    elif ext == '.xpt':
+        return replace_text_in_xpt(file_path, old_text, new_text)
+    else:
+        return None
+
+
+def extract_zip_and_process(zip_path, old_text, new_text):
+    """Extract ZIP, process supported files, return new ZIP with processed files"""
+    extract_folder = os.path.join(UPLOAD_FOLDER, f"extracted_{uuid.uuid4()}")
+    os.makedirs(extract_folder)
+    processed_files = []
+    supported_extensions = ['.pdf', '.csv', '.xml', '.xpt']
+    
+    try:
+        # Extract ZIP contents
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_folder)
+        
+        # Find and process supported files
+        for root, dirs, files in os.walk(extract_folder):
+            for file in files:
+                file_path = os.path.join(root, file)
+                ext = os.path.splitext(file)[1].lower()
+                if ext in supported_extensions:
+                    try:
+                        processed_file = process_single_file(file_path, old_text, new_text)
+                        if processed_file:
+                            processed_files.append(processed_file)
+                    except Exception as e:
+                        print(f"Error processing {file}: {str(e)}")
+                        continue
+        
+        # Create new ZIP with processed files
+        if processed_files:
+            output_zip = zip_path.replace('.zip', '_modified.zip')
+            with zipfile.ZipFile(output_zip, 'w') as zip_ref:
+                for processed_file in processed_files:
+                    zip_ref.write(processed_file, os.path.basename(processed_file))
+            return output_zip
+        else:
+            return None
+    finally:
+        # Cleanup extraction directory
+        shutil.rmtree(extract_folder, ignore_errors=True)
+
+
+# ---------------- Routes ----------------
+
+@app.route('/')
+def index():
+    """Serve upload form page"""
+    return render_template('index.html')
+
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Process files and return JSON with download info"""
+    try:
+        # Get form data
+        old_text = request.form.get('old_text', '').strip()
+        new_text = request.form.get('new_text', '').strip()
+        if not old_text:
+            return jsonify({'success': False, 'error': 'Text to find is required'}), 400
+        
+        uploaded_files = request.files.getlist('pdf_file')
+        if not uploaded_files or all(file.filename == '' for file in uploaded_files):
+            return jsonify({'success': False, 'error': 'No files selected'}), 400
+        
+        processed_files = []
+        temp_files = []
+        supported_extensions = ['.pdf', '.csv', '.xml', '.xpt', '.zip']
+        
+        # Process each uploaded file
+        for file in uploaded_files:
+            if file.filename == '':
+                continue
+            filename = secure_filename(file.filename)
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in supported_extensions:
+                return jsonify({'success': False, 'error': f'Unsupported file type: {ext}'}), 400
+            
+            # Save with unique filename to prevent conflicts
+            unique_filename = f"{uuid.uuid4()}_{filename}"
+            file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+            file.save(file_path)
+            temp_files.append(file_path)
+            
+            # Process file (ZIP or individual file)
+            if ext == '.zip':
+                output_path = extract_zip_and_process(file_path, old_text, new_text)
+            else:
+                output_path = process_single_file(file_path, old_text, new_text)
+            
+            if output_path:
+                processed_files.append({
+                    'path': output_path,
+                    'name': f"modified_{filename}"
+                })
+            else:
+                return jsonify({'success': False, 'error': f'Failed to process {filename}'}), 400
+        
+        if not processed_files:
+            return jsonify({'success': False, 'error': 'No files processed successfully'}), 400
+        
+        # Generate unique download ID
+        download_id = str(uuid.uuid4())
+        
+        # Prepare final file
+        if len(processed_files) == 1:
+            final_file_path = processed_files[0]['path']
+            final_filename = processed_files[0]['name']
+        else:
+            # Create ZIP for multiple processed files
+            final_filename = f"modified_files.zip"
+            final_file_path = os.path.join(UPLOAD_FOLDER, f"{download_id}_{final_filename}")
+            with zipfile.ZipFile(final_file_path, 'w') as zip_ref:
+                for processed_file in processed_files:
+                    zip_ref.write(processed_file['path'], processed_file['name'])
+        
+        # Store in cache for download
+        processed_files_cache[download_id] = {
+            'file_path': final_file_path,
+            'filename': final_filename,
+            'temp_files': temp_files + [pf['path'] for pf in processed_files]
+        }
+        
+        # Schedule cleanup after 5 minutes
+        def cleanup_files():
+            try:
+                if download_id in processed_files_cache:
+                    file_info = processed_files_cache[download_id]
+                    for temp_file in file_info['temp_files']:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    if os.path.exists(file_info['file_path']):
+                        os.remove(file_info['file_path'])
+                    del processed_files_cache[download_id]
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+        
+        threading.Timer(300.0, cleanup_files).start()  # 5 minutes
+        
+        return jsonify({
+            'success': True,
+            'download_id': download_id,
+            'filename': final_filename,
+            'message': 'Files processed successfully!'
+        })
+    
+    except Exception as e:
+        print(f"Error in upload_file: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/download/<download_id>')
+def download_file(download_id):
+    """Download processed file by ID"""
+    try:
+        if download_id not in processed_files_cache:
+            return jsonify({'error': 'File not found or expired'}), 404
+        
+        file_info = processed_files_cache[download_id]
+        
+        if not os.path.exists(file_info['file_path']):
+            return jsonify({'error': 'File no longer available'}), 404
+        
+        return send_file(
+            file_info['file_path'],
+            as_attachment=True,
+            download_name=file_info['filename'],
+            mimetype='application/octet-stream'
+        )
+    
+    except Exception as e:
+        print(f"Error in download_file: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Error handlers
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print(f"Unhandled exception: {str(e)}")
+    return jsonify({'success': False, 'error': 'An unexpected error occurred'}), 500
+
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({'success': False, 'error': 'File too large. Maximum size is 50MB'}), 413
+
+
+if __name__ == "__main__":
+    # For local testing
+    app.run(host="0.0.0.0", port=5000, debug=True)
