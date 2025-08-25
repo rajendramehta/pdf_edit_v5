@@ -101,15 +101,18 @@
                 });
 
                 if (!response.ok) {
-                    // ✅ safer JSON + fallback handling
+                    // ✅ check content type before parsing
                     let errorMsg = 'Processing failed';
-                    try {
+                    const contentType = response.headers.get("content-type") || "";
+
+                    if (contentType.includes("application/json")) {
                         const error = await response.json();
                         errorMsg = error.error || errorMsg;
-                    } catch {
+                    } else {
                         const text = await response.text();
                         errorMsg = text || errorMsg;
                     }
+
                     throw new Error(errorMsg);
                 }
 
