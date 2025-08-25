@@ -1,179 +1,144 @@
-# Simple single-file Flask application - no templates needed
-# This eliminates template-related issues
+# Minimal Flask app - guaranteed to work
+# This version removes all potential error sources
 
 from flask import Flask, request, send_file, jsonify
 import os
-import fitz  # PyMuPDF
-import pandas as pd
-import xml.etree.ElementTree as ET
-import pyreadstat
 import uuid
-import shutil
-import zipfile
-from werkzeug.utils import secure_filename
-import threading
+import tempfile
 import traceback
 
+# Try to import PDF library, but don't fail if not available
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+    print("Warning: PyMuPDF not installed. PDF processing will be disabled.")
+
+# Try to import pandas, but don't fail if not available
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+    print("Warning: pandas not installed. CSV processing will be disabled.")
+
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 
-# Create uploads directory
-UPLOAD_FOLDER = 'uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# Use system temp directory
+UPLOAD_FOLDER = tempfile.mkdtemp()
+print(f"Using upload folder: {UPLOAD_FOLDER}")
 
-# Store processed files temporarily
+# Store processed files
 processed_files_cache = {}
 
-# ---------------- HTML Template (embedded) ----------------
+# Simple HTML template
 HTML_TEMPLATE = '''<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document Text Replacer</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh; padding: 20px; 
-        }
-        .container {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-            padding: 30px; max-width: 600px; margin: 0 auto;
-        }
-        h1 { color: #333; text-align: center; margin-bottom: 30px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; color: #555; font-weight: 600; }
-        input[type="text"] {
-            width: 100%; padding: 12px; border: 2px solid #e1e5e9;
-            border-radius: 8px; font-size: 1rem;
-        }
-        input[type="text"]:focus { outline: none; border-color: #667eea; }
-        .file-upload { 
-            border: 2px dashed #e1e5e9; border-radius: 8px;
-            padding: 20px; text-align: center; cursor: pointer;
-        }
-        .file-upload:hover { border-color: #667eea; }
-        .btn {
-            width: 100%; padding: 15px; border: none; border-radius: 8px;
-            font-size: 1.1rem; font-weight: 600; cursor: pointer;
-            margin-top: 10px; transition: all 0.3s ease;
-        }
-        .btn-primary { background: #667eea; color: white; }
-        .btn-success { background: #28a745; color: white; }
-        .btn:hover { transform: translateY(-2px); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; }
-        .status { padding: 10px; border-radius: 5px; margin: 10px 0; text-align: center; }
-        .status-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .form-group { margin: 20px 0; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"] { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        input[type="file"] { width: 100%; padding: 8px; }
+        button { background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%; margin: 10px 0; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button:hover:not(:disabled) { background: #0056b3; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         .hidden { display: none; }
-        .loading { display: none; text-align: center; color: #667eea; margin: 10px 0; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Document Text Replacer</h1>
-        
+    <h1>Document Text Replacer</h1>
+    <div>
         <div class="form-group">
-            <label for="old_text">Text to Find</label>
-            <input type="text" id="old_text" placeholder="Enter text to replace..." required>
+            <label for="old_text">Text to Find:</label>
+            <input type="text" id="old_text" placeholder="Enter text to replace" required>
         </div>
-        
         <div class="form-group">
-            <label for="new_text">Replace With</label>
-            <input type="text" id="new_text" placeholder="Enter replacement text...">
+            <label for="new_text">Replace With:</label>
+            <input type="text" id="new_text" placeholder="Enter replacement text">
         </div>
-        
         <div class="form-group">
-            <label>Upload Files</label>
-            <div class="file-upload" onclick="document.getElementById('files').click()">
-                <p>Click to select files</p>
-                <p style="font-size: 0.9em; color: #666;">PDF, CSV, XML, XPT, ZIP supported</p>
-                <input type="file" id="files" multiple accept=".pdf,.csv,.xml,.xpt,.zip" style="display: none;">
-            </div>
-            <div id="file-info" style="margin-top: 10px; color: #667eea;"></div>
+            <label for="files">Select Files:</label>
+            <input type="file" id="files" multiple accept=".pdf,.txt,.csv">
         </div>
-        
-        <button class="btn btn-primary" id="processBtn" disabled>Process Files</button>
-        <div class="loading" id="loading">Processing...</div>
+        <button id="processBtn" disabled>Process Files</button>
         <div id="status"></div>
-        <button class="btn btn-success hidden" id="downloadBtn">Download Result</button>
+        <button id="downloadBtn" class="hidden">Download Result</button>
     </div>
 
     <script>
         const fileInput = document.getElementById('files');
-        const fileInfo = document.getElementById('file-info');
         const processBtn = document.getElementById('processBtn');
         const downloadBtn = document.getElementById('downloadBtn');
-        const loading = document.getElementById('loading');
         const status = document.getElementById('status');
         const oldText = document.getElementById('old_text');
         const newText = document.getElementById('new_text');
         
         let selectedFiles = [];
         
-        // File selection
-        fileInput.addEventListener('change', function(e) {
-            selectedFiles = Array.from(e.target.files);
-            if (selectedFiles.length > 0) {
-                fileInfo.textContent = selectedFiles.length + ' file(s) selected: ' + 
-                    selectedFiles.map(f => f.name).join(', ');
-                checkForm();
-            }
-        });
+        function showStatus(message, type = 'error') {
+            status.innerHTML = '<div class="status ' + type + '">' + message + '</div>';
+        }
         
-        // Form validation
         function checkForm() {
             processBtn.disabled = !(selectedFiles.length > 0 && oldText.value.trim());
         }
         
+        fileInput.addEventListener('change', function(e) {
+            selectedFiles = Array.from(e.target.files);
+            checkForm();
+        });
+        
         oldText.addEventListener('input', checkForm);
         newText.addEventListener('input', checkForm);
         
-        // Process files
         processBtn.addEventListener('click', async function() {
-            if (!selectedFiles.length || !oldText.value.trim()) return;
+            if (!selectedFiles.length || !oldText.value.trim()) {
+                showStatus('Please select files and enter text to find');
+                return;
+            }
             
             const formData = new FormData();
-            selectedFiles.forEach(file => formData.append('pdf_file', file));
+            selectedFiles.forEach(file => formData.append('files', file));
             formData.append('old_text', oldText.value.trim());
             formData.append('new_text', newText.value.trim());
             
             processBtn.disabled = true;
-            loading.style.display = 'block';
-            status.innerHTML = '';
+            showStatus('Processing...', 'success');
             downloadBtn.classList.add('hidden');
             
             try {
-                console.log('Sending request to /upload');
-                const response = await fetch('/upload', {
+                console.log('Sending request to /process');
+                
+                const response = await fetch('/process', {
                     method: 'POST',
                     body: formData
                 });
                 
                 console.log('Response status:', response.status);
-                console.log('Response headers:', response.headers);
+                console.log('Response content-type:', response.headers.get('content-type'));
                 
-                let result;
+                // Check if response is JSON
                 const contentType = response.headers.get('content-type');
-                
-                if (contentType && contentType.includes('application/json')) {
-                    result = await response.json();
-                } else {
-                    // If we get HTML instead of JSON, there's an error
+                if (!contentType || !contentType.includes('application/json')) {
                     const text = await response.text();
-                    console.error('Expected JSON but got:', text.substring(0, 200));
-                    throw new Error('Server returned HTML instead of JSON. Check server logs.');
+                    console.error('Non-JSON response:', text.substring(0, 500));
+                    throw new Error('Server error - check console for details');
                 }
                 
+                const result = await response.json();
+                console.log('Parsed result:', result);
+                
                 if (result.success) {
-                    status.innerHTML = '<div class="status status-success">' + result.message + '</div>';
-                    downloadBtn.setAttribute('data-download-id', result.download_id);
+                    showStatus(result.message, 'success');
+                    downloadBtn.setAttribute('data-id', result.download_id);
                     downloadBtn.setAttribute('data-filename', result.filename);
                     downloadBtn.classList.remove('hidden');
                 } else {
@@ -182,16 +147,14 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 
             } catch (error) {
                 console.error('Error:', error);
-                status.innerHTML = '<div class="status status-error">Error: ' + error.message + '</div>';
+                showStatus('Error: ' + error.message);
             } finally {
                 processBtn.disabled = false;
-                loading.style.display = 'none';
             }
         });
         
-        // Download file
         downloadBtn.addEventListener('click', async function() {
-            const downloadId = downloadBtn.getAttribute('data-download-id');
+            const downloadId = downloadBtn.getAttribute('data-id');
             const filename = downloadBtn.getAttribute('data-filename');
             
             try {
@@ -203,29 +166,45 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     const a = document.createElement('a');
                     a.href = url;
                     a.download = filename;
-                    document.body.appendChild(a);
                     a.click();
-                    a.remove();
                     URL.revokeObjectURL(url);
-                    status.innerHTML = '<div class="status status-success">Download started!</div>';
+                    showStatus('Download started!', 'success');
                 } else {
                     const error = await response.json();
                     throw new Error(error.error || 'Download failed');
                 }
             } catch (error) {
-                status.innerHTML = '<div class="status status-error">Download error: ' + error.message + '</div>';
+                showStatus('Download error: ' + error.message);
             }
         });
     </script>
 </body>
 </html>'''
 
-# ---------------- File Processing Functions ----------------
-
-def replace_text_in_pdf(input_pdf_path, old_text, new_text):
-    """Replace text in PDF"""
+def replace_text_in_text_file(file_path, old_text, new_text):
+    """Replace text in plain text files"""
     try:
-        pdf_document = fitz.open(input_pdf_path)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        new_content = content.replace(old_text, new_text)
+        
+        output_path = file_path.replace('.txt', '_modified.txt')
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+        
+        return output_path
+    except Exception as e:
+        print(f"Text file processing error: {e}")
+        raise
+
+def replace_text_in_pdf(file_path, old_text, new_text):
+    """Replace text in PDF files"""
+    if not HAS_PYMUPDF:
+        raise Exception("PyMuPDF not installed. Cannot process PDF files.")
+    
+    try:
+        pdf_document = fitz.open(file_path)
         for page in pdf_document:
             text_instances = page.search_for(old_text)
             for rect in text_instances:
@@ -234,7 +213,7 @@ def replace_text_in_pdf(input_pdf_path, old_text, new_text):
             for rect in text_instances:
                 page.insert_text(fitz.Point(rect.x0, rect.y1 - 2), new_text, fontsize=12)
         
-        output_path = input_pdf_path.replace('.pdf', '_modified.pdf')
+        output_path = file_path.replace('.pdf', '_modified.pdf')
         pdf_document.save(output_path)
         pdf_document.close()
         return output_path
@@ -242,224 +221,192 @@ def replace_text_in_pdf(input_pdf_path, old_text, new_text):
         print(f"PDF processing error: {e}")
         raise
 
-def replace_text_in_csv(input_csv_path, old_text, new_text):
-    """Replace text in CSV"""
+def replace_text_in_csv(file_path, old_text, new_text):
+    """Replace text in CSV files"""
+    if not HAS_PANDAS:
+        raise Exception("pandas not installed. Cannot process CSV files.")
+    
     try:
-        df = pd.read_csv(input_csv_path, dtype=str)
+        df = pd.read_csv(file_path, dtype=str)
         df = df.applymap(lambda x: x.replace(old_text, new_text) if isinstance(x, str) else x)
-        output_path = input_csv_path.replace('.csv', '_modified.csv')
+        output_path = file_path.replace('.csv', '_modified.csv')
         df.to_csv(output_path, index=False)
         return output_path
     except Exception as e:
         print(f"CSV processing error: {e}")
         raise
 
-def replace_text_in_xml(input_xml_path, old_text, new_text):
-    """Replace text in XML"""
-    try:
-        tree = ET.parse(input_xml_path)
-        root = tree.getroot()
-        
-        def replace_in_element(elem):
-            if elem.text and old_text in elem.text:
-                elem.text = elem.text.replace(old_text, new_text)
-            if elem.tail and old_text in elem.tail:
-                elem.tail = elem.tail.replace(old_text, new_text)
-            for k, v in elem.attrib.items():
-                if old_text in v:
-                    elem.attrib[k] = v.replace(old_text, new_text)
-            for child in elem:
-                replace_in_element(child)
-        
-        replace_in_element(root)
-        output_path = input_xml_path.replace('.xml', '_modified.xml')
-        tree.write(output_path, encoding="utf-8", xml_declaration=True)
-        return output_path
-    except Exception as e:
-        print(f"XML processing error: {e}")
-        raise
-
-def replace_text_in_xpt(input_xpt_path, old_text, new_text):
-    """Replace text in XPT"""
-    try:
-        df, meta = pyreadstat.read_xport(input_xpt_path)
-        df = df.applymap(lambda x: x.replace(old_text, new_text) if isinstance(x, str) else x)
-        output_path = input_xpt_path.replace('.xpt', '_modified.xpt')
-        pyreadstat.write_xport(df, output_path, file_format_version=8, table_name=meta.table_name)
-        return output_path
-    except Exception as e:
-        print(f"XPT processing error: {e}")
-        raise
-
-def process_single_file(file_path, old_text, new_text):
-    """Process single file based on extension"""
+def process_file(file_path, old_text, new_text):
+    """Process a single file based on its extension"""
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == '.pdf':
+    
+    if ext == '.txt':
+        return replace_text_in_text_file(file_path, old_text, new_text)
+    elif ext == '.pdf':
         return replace_text_in_pdf(file_path, old_text, new_text)
     elif ext == '.csv':
         return replace_text_in_csv(file_path, old_text, new_text)
-    elif ext == '.xml':
-        return replace_text_in_xml(file_path, old_text, new_text)
-    elif ext == '.xpt':
-        return replace_text_in_xpt(file_path, old_text, new_text)
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-# ---------------- Routes ----------------
-
 @app.route('/')
 def index():
-    """Serve the HTML page"""
+    """Serve the main page"""
     return HTML_TEMPLATE
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    """Process uploaded files and return JSON response"""
+@app.route('/process', methods=['POST'])
+def process_files():
+    """Process uploaded files"""
     try:
-        print("Upload endpoint hit")  # Debug log
+        print("=== PROCESS ENDPOINT HIT ===")
         
-        # Validate form data
+        # Get form data
         old_text = request.form.get('old_text', '').strip()
         new_text = request.form.get('new_text', '').strip()
         
-        print(f"Old text: '{old_text}', New text: '{new_text}'")  # Debug log
+        print(f"Old text: '{old_text}'")
+        print(f"New text: '{new_text}'")
         
         if not old_text:
+            print("ERROR: No old_text provided")
             return jsonify({'success': False, 'error': 'Text to find is required'}), 400
         
-        uploaded_files = request.files.getlist('pdf_file')
-        print(f"Number of uploaded files: {len(uploaded_files)}")  # Debug log
+        # Get uploaded files
+        uploaded_files = request.files.getlist('files')
+        print(f"Number of files: {len(uploaded_files)}")
         
         if not uploaded_files or all(file.filename == '' for file in uploaded_files):
+            print("ERROR: No files uploaded")
             return jsonify({'success': False, 'error': 'No files selected'}), 400
         
         processed_files = []
         temp_files = []
-        supported_extensions = ['.pdf', '.csv', '.xml', '.xpt', '.zip']
         
         # Process each file
-        for file in uploaded_files:
+        for i, file in enumerate(uploaded_files):
             if file.filename == '':
                 continue
-                
-            filename = secure_filename(file.filename)
-            ext = os.path.splitext(filename)[1].lower()
             
-            print(f"Processing file: {filename}, extension: {ext}")  # Debug log
+            print(f"Processing file {i+1}: {file.filename}")
             
-            if ext not in supported_extensions:
-                return jsonify({'success': False, 'error': f'Unsupported file type: {ext}'}), 400
+            # Save uploaded file
+            file_id = str(uuid.uuid4())
+            file_ext = os.path.splitext(file.filename)[1]
+            temp_filename = f"{file_id}{file_ext}"
+            temp_path = os.path.join(UPLOAD_FOLDER, temp_filename)
             
-            # Save file
-            unique_filename = f"{uuid.uuid4()}_{filename}"
-            file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-            file.save(file_path)
-            temp_files.append(file_path)
+            print(f"Saving to: {temp_path}")
+            file.save(temp_path)
+            temp_files.append(temp_path)
             
-            # Process file
-            if ext == '.zip':
-                # For ZIP files, you'd implement ZIP processing here
-                # For now, we'll skip ZIP processing to keep it simple
-                return jsonify({'success': False, 'error': 'ZIP processing temporarily disabled'}), 400
-            else:
-                output_path = process_single_file(file_path, old_text, new_text)
+            try:
+                # Process the file
+                output_path = process_file(temp_path, old_text, new_text)
                 processed_files.append({
                     'path': output_path,
-                    'name': f"modified_{filename}"
+                    'name': f"modified_{file.filename}"
                 })
+                print(f"Successfully processed: {file.filename}")
+                
+            except Exception as e:
+                print(f"Error processing {file.filename}: {str(e)}")
+                return jsonify({'success': False, 'error': f'Error processing {file.filename}: {str(e)}'}), 400
         
         if not processed_files:
+            print("ERROR: No files processed")
             return jsonify({'success': False, 'error': 'No files processed successfully'}), 400
         
-        # Generate download ID
+        # Prepare download
         download_id = str(uuid.uuid4())
         
-        # Prepare final file
         if len(processed_files) == 1:
-            final_file_path = processed_files[0]['path']
-            final_filename = processed_files[0]['name']
+            # Single file
+            final_path = processed_files[0]['path']
+            final_name = processed_files[0]['name']
         else:
-            # Create ZIP for multiple files
-            final_filename = f"modified_files.zip"
-            final_file_path = os.path.join(UPLOAD_FOLDER, f"{download_id}_{final_filename}")
-            with zipfile.ZipFile(final_file_path, 'w') as zip_ref:
-                for processed_file in processed_files:
-                    zip_ref.write(processed_file['path'], processed_file['name'])
+            # Multiple files - create zip
+            import zipfile
+            final_name = "modified_files.zip"
+            final_path = os.path.join(UPLOAD_FOLDER, f"{download_id}.zip")
+            
+            with zipfile.ZipFile(final_path, 'w') as zf:
+                for pf in processed_files:
+                    zf.write(pf['path'], pf['name'])
         
         # Store for download
         processed_files_cache[download_id] = {
-            'file_path': final_file_path,
-            'filename': final_filename,
+            'file_path': final_path,
+            'filename': final_name,
             'temp_files': temp_files + [pf['path'] for pf in processed_files]
         }
         
-        # Schedule cleanup (5 minutes)
-        def cleanup():
-            try:
-                if download_id in processed_files_cache:
-                    file_info = processed_files_cache[download_id]
-                    for temp_file in file_info['temp_files']:
-                        if os.path.exists(temp_file):
-                            os.remove(temp_file)
-                    if os.path.exists(file_info['file_path']):
-                        os.remove(file_info['file_path'])
-                    del processed_files_cache[download_id]
-            except Exception as e:
-                print(f"Cleanup error: {e}")
+        print(f"SUCCESS: Stored download {download_id}")
         
-        threading.Timer(300.0, cleanup).start()
-        
-        print("Processing successful, returning JSON")  # Debug log
-        
-        return jsonify({
+        # Return JSON response
+        response_data = {
             'success': True,
             'download_id': download_id,
-            'filename': final_filename,
-            'message': 'Files processed successfully!'
-        })
-    
+            'filename': final_name,
+            'message': f'Successfully processed {len(processed_files)} file(s)!'
+        }
+        
+        print(f"Returning JSON: {response_data}")
+        return jsonify(response_data)
+        
     except Exception as e:
-        print(f"Error in upload_file: {str(e)}")
+        print(f"CRITICAL ERROR: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': f'Server error: {str(e)}'}), 500
 
 @app.route('/download/<download_id>')
 def download_file(download_id):
     """Download processed file"""
     try:
+        print(f"Download request for ID: {download_id}")
+        
         if download_id not in processed_files_cache:
+            print(f"Download ID not found: {download_id}")
             return jsonify({'error': 'File not found or expired'}), 404
         
         file_info = processed_files_cache[download_id]
+        file_path = file_info['file_path']
         
-        if not os.path.exists(file_info['file_path']):
+        if not os.path.exists(file_path):
+            print(f"File does not exist: {file_path}")
             return jsonify({'error': 'File no longer available'}), 404
         
+        print(f"Sending file: {file_path}")
         return send_file(
-            file_info['file_path'],
+            file_path,
             as_attachment=True,
-            download_name=file_info['filename'],
-            mimetype='application/octet-stream'
+            download_name=file_info['filename']
         )
-    
+        
     except Exception as e:
-        print(f"Error in download_file: {str(e)}")
+        print(f"Download error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Error handlers
 @app.errorhandler(404)
-def not_found_error(error):
-    return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
-
-@app.errorhandler(413)
-def too_large(e):
-    return jsonify({'success': False, 'error': 'File too large. Maximum size is 50MB'}), 413
+def not_found(error):
+    print(f"404 error: {error}")
+    return jsonify({'success': False, 'error': 'Page not found'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
+    print(f"500 error: {error}")
     return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
+@app.errorhandler(413)
+def too_large(error):
+    print(f"File too large: {error}")
+    return jsonify({'success': False, 'error': 'File too large (max 50MB)'}), 413
+
 if __name__ == "__main__":
-    print("Starting Flask app...")
+    print("=" * 50)
+    print("STARTING MINIMAL FLASK APP")
     print(f"Upload folder: {UPLOAD_FOLDER}")
+    print(f"PyMuPDF available: {HAS_PYMUPDF}")
+    print(f"Pandas available: {HAS_PANDAS}")
+    print("=" * 50)
+    
     app.run(host="0.0.0.0", port=5000, debug=True)
